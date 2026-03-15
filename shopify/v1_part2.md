@@ -98,6 +98,92 @@ GraphQL: single POST endpoint (`/admin/api/{version}/graphql.json`), queries + m
 | `GET /locations/{id}.json` | `location(id:"gid://shopify/Location/{id}")` query | |
 | `GET /locations/{id}/inventory_levels.json` | `location(id:$id) { inventoryLevels(first:N) {...} }` query | Nested connection |
 
+### Other Resources (common in large e-commerce codebases)
+
+The tables above cover the most common resources. Large codebases will have many more. Below are additional mappings — and more importantly, the process for handling **any** REST resource not listed here.
+
+| REST Resource | GraphQL Equivalent | Key Differences |
+|--------------|-------------------|-----------------|
+| `GET/POST /gift_cards.json` | `giftCard` / `giftCardCreate` | GID: `gid://shopify/GiftCard/{id}` |
+| `GET/POST /pages.json` | `pages` / `pageCreate` | Part of OnlineStore, uses `PageCreateInput` |
+| `GET/POST /blogs.json` / `articles.json` | `blogs` / `blogCreate`, articles via blog connection | Articles are nested under Blog |
+| `GET/POST /redirects.json` | `urlRedirect` / `urlRedirectCreate` | Scope changed: `write_content` → `write_online_store_navigation` |
+| `GET /reports.json` | `shopifyqlQuery` | Completely different approach — uses ShopifyQL query language |
+| `GET/POST /script_tags.json` | **No GraphQL equivalent** | Deprecated entirely. Use Shopify App Extensions instead |
+| `GET /transactions.json` | `order(id:$id) { transactions {...} }` | Nested under Order, not standalone |
+| `GET /refunds.json` | `order(id:$id) { refunds {...} }` / `refundCreate` | Nested under Order |
+| `GET/POST /carrier_services.json` | `deliveryCarrierService` / `carrierServiceCreate` | Part of DeliveryProfile system |
+| `GET /payouts.json` | `shopifyPaymentsAccount { payouts {...} }` | Nested under ShopifyPaymentsAccount |
+| `GET/POST /marketing_events.json` | `marketingActivity` / `marketingActivityCreate` | Renamed: MarketingEvent → MarketingActivity |
+| `GET /tender_transactions.json` | `tenderTransactions(first:N)` query | Minimal changes |
+| `GET/PUT /themes.json` / `assets.json` | `theme` / `themeFilesUpsert` | Assets → ThemeFiles, completely restructured |
+| `POST /recurring_application_charges.json` | `appSubscriptionCreate` | Part of App Billing API |
+| `POST /application_charges.json` | `appPurchaseOneTimeCreate` | One-time charges |
+
+### How to Handle ANY REST Resource Not Listed
+
+When you encounter a REST endpoint not in the tables above, follow this process:
+
+**Step 1 — Identify the REST resource name**
+```
+Example: GET /admin/api/2025-01/smart_collections/123.json
+→ Resource: SmartCollection
+→ Action: Get by ID
+```
+
+**Step 2 — Search the GraphQL Admin API docs**
+Fetch: `https://shopify.dev/docs/api/admin-graphql/latest`
+- Search for the resource name (try both singular and plural, camelCase)
+- Look in the QueryRoot for queries, and in Mutations for mutations
+- Check if the resource was renamed (e.g., `PriceRule` → `DiscountNode`, `MarketingEvent` → `MarketingActivity`)
+
+**Step 3 — Check if the resource still exists in GraphQL**
+Some REST resources have no GraphQL equivalent:
+- `ScriptTag` — deprecated, use App Extensions
+- Some legacy resources — check Shopify's deprecation notices
+
+If no equivalent exists, flag it to the user and skip conversion.
+
+**Step 4 — Build the GID**
+```
+Pattern: gid://shopify/{ResourceName}/{id}
+- Use PascalCase resource name
+- Example: gid://shopify/SmartCollection/123
+- Check docs for exact GID type — some differ from resource name
+  (e.g., DiscountCodeNode vs DiscountAutomaticNode)
+```
+
+**Step 5 — Map the CRUD operations**
+| REST Pattern | GraphQL Pattern |
+|-------------|----------------|
+| `GET /{resources}.json` | `{resources}(first:N)` query |
+| `GET /{resources}/{id}.json` | `{resource}(id: $gid)` query |
+| `GET /{resources}/count.json` | `{resources}Count` query (if exists) |
+| `POST /{resources}.json` | `{resource}Create(input: $input)` mutation |
+| `PUT /{resources}/{id}.json` | `{resource}Update(input: $input)` mutation |
+| `DELETE /{resources}/{id}.json` | `{resource}Delete(input: {id: $gid})` mutation |
+
+**Step 6 — Verify by fetching the specific mutation/query docs**
+```
+Fetch: https://shopify.dev/docs/api/admin-graphql/latest/mutations/{mutationName}
+Fetch: https://shopify.dev/docs/api/admin-graphql/latest/queries/{queryName}
+
+Check:
+- Exact argument names and types
+- Input type name (e.g., ProductCreateInput vs ProductInput)
+- Return fields (especially userErrors)
+- Required scopes
+```
+
+**Step 7 — Apply the standard conversion rules**
+- GID format for IDs
+- `nodes` pattern for lists
+- `userErrors` check for mutations
+- Field name mapping (snake_case → camelCase)
+- Error preservation (Section 0.1 in `v1_part1.md`)
+
+This process works for ANY Shopify REST resource — even ones added after this skill was written.
+
 ---
 
 ## 3. Field Name Mapping (Critical Differences)
@@ -152,7 +238,7 @@ These will bite you if you don't handle them explicitly:
 
 15. **`orderCancel` uses individual arguments, not an input object.** Unlike most mutations, `orderCancel(orderId: ID!, reason: OrderCancelReason!, restock: Boolean!, ...)` takes separate args. Wrapping them in an input object will cause a schema validation error.
 
-16. **REST `_rest.go` must not be deleted.** Keep the old implementation as rollback path. Mark deprecated but preserve the code. For a large e-commerce system, the ability to switch back to REST within minutes is worth the small code duplication.
+16. **Convert in-place, not side-by-side.** Replace REST code with GraphQL code directly in the same file. Do not create separate `_graphql.go` files. The function signature, return types, and error behavior must stay identical — only the internal API call changes from REST to GraphQL.
 
 ---
 

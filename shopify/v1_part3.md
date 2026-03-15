@@ -188,9 +188,19 @@ func PrintCompareReport(results []CompareResult) {
 }
 ```
 
-### 6.1 Live Parity Test Pattern
+### 6.1 Test Flow: REST First → GraphQL → Compare
 
-The most important test: same input, call both REST and GraphQL on real Shopify, compare output.
+The conversion test flow follows this exact sequence:
+
+1. **Before converting**: run the function with REST code, record input + output as baseline
+2. **After converting in-place**: run the same function (now GraphQL), same input
+3. **Compare**: every field must match. If not → research docs → fix → re-test
+
+This means the parity test calls the **same function twice** — once before conversion (REST baseline saved as fixture or run live before converting) and once after (GraphQL, run live after converting).
+
+### 6.2 Live Parity Test Pattern
+
+Same input, call both REST and GraphQL on real Shopify, compare output.
 
 ```go
 // File: $TEST_DIR/product/product_parity_test.go
@@ -254,7 +264,7 @@ func TestLiveParity_GetProduct(t *testing.T) {
 }
 ```
 
-### 6.2 Multi-Case Test Pattern
+### 6.3 Multi-Case Test Pattern
 
 Each service must be tested with multiple different cases on real data (at least 5-10 resources):
 
@@ -361,7 +371,7 @@ func TestLive_CreateUpdateDelete_Product(t *testing.T) {
 }
 ```
 
-### 6.3 Mandatory Test Cases per Service
+### 6.4 Mandatory Test Cases per Service
 
 Each service must have these tests, **calling the real Shopify API**:
 
@@ -385,7 +395,7 @@ Each service must have these tests, **calling the real Shopify API**:
 | 14 | **Large data** | Long description, many tags | Product with long desc, many tags | No truncation |
 | 15 | **Concurrent reads** | 5 goroutines GetProduct | 5 goroutines | All succeed, race-free |
 
-### 6.4 Service-Specific Test Cases
+### 6.5 Service-Specific Test Cases
 
 **Orders:**
 | # | Test | Reason |
@@ -409,7 +419,7 @@ Each service must have these tests, **calling the real Shopify API**:
 | C2 | Update email → Get → verify | Partial update |
 | C3 | Search by email wildcard | GraphQL filter `email:*@example.com` |
 
-### 6.5 Run Commands
+### 6.6 Run Commands
 
 ```bash
 cd $TEST_DIR
@@ -430,7 +440,7 @@ go test ./... -run "Live_.*MultipleCases" -v
 go test ./... -v -json 2>&1 | tee test_results.json
 ```
 
-### 6.6 Live API Testing Notes
+### 6.7 Live API Testing Notes
 
 1. **Use development store.** Never test on production. Shopify Partner accounts allow free dev stores.
 2. **Cleanup after each test.** All created resources must be deleted in `t.Cleanup()`.
@@ -446,12 +456,12 @@ go test ./... -v -json 2>&1 | tee test_results.json
 For each service being converted, verify all items before marking complete:
 
 ### Scope Discipline (check FIRST)
-- [ ] `git diff --stat` only contains files in the "ONLY modify" list
+- [ ] `git diff --stat` only shows the converted file(s) + helper files (`gid.go`, `graphql_client.go`)
 - [ ] Domain structs NOT modified
 - [ ] Service interfaces NOT modified
 - [ ] Handlers / Controllers NOT modified
 - [ ] No files outside the service being converted were changed
-- [ ] `_rest.go` still intact, only added deprecated comment
+- [ ] REST code replaced in-place (same file, same function signature)
 - [ ] No refactoring / renaming / restructuring of unrelated code
 - [ ] Error types preserved (same type, same message format)
 
@@ -487,6 +497,13 @@ For each service being converted, verify all items before marking complete:
 - [ ] Rate limiting: `extensions.cost` logged or monitored
 - [ ] API version consistent with rest of codebase
 
+### Comparison Loop (Step 7 — CRITICAL)
+- [ ] REST baseline recorded BEFORE converting each function
+- [ ] GraphQL tested with same input AFTER converting
+- [ ] Every field compared: REST output = GraphQL output
+- [ ] Any mismatch → researched against official Shopify docs → fixed → re-tested
+- [ ] No field skipped or assumed correct without verification
+
 ### Tests — Live API (at $TEST_DIR)
 - [ ] Tests call real Shopify API, no mocking
 - [ ] Tests written in external directory, NOT in main repo
@@ -496,7 +513,7 @@ For each service being converted, verify all items before marking complete:
 - [ ] CRUD cycle test: Create → Read → Update → Delete successful
 - [ ] Error handling tests: not found, invalid input, rate limit
 - [ ] Cleanup: no garbage left on dev store
-- [ ] Unit tests cover all categories from Section 6.3
+- [ ] Unit tests cover all categories from Section 6.4
 - [ ] Main repo tests still pass: `cd [REPO] && go test ./... -race` — zero regression
 - [ ] `go vet ./...` clean in main repo
 
