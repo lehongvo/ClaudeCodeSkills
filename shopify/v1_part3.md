@@ -591,14 +591,22 @@ func GenerateHTML(report ConversionReport, outPath string) error {
 }
 
 func SaveReport(report ConversionReport, dir string) error {
-    os.MkdirAll(dir, 0755)
-    jsonData, _ := json.MarshalIndent(report, "", "  ")
-    os.WriteFile(fmt.Sprintf("%s/%s_report.json", dir, report.Service), jsonData, 0644)
+    if err := os.MkdirAll(dir, 0755); err != nil {
+        return fmt.Errorf("create report dir: %w", err)
+    }
+    jsonData, err := json.MarshalIndent(report, "", "  ")
+    if err != nil {
+        return fmt.Errorf("marshal report: %w", err)
+    }
+    jsonPath := fmt.Sprintf("%s/%s_report.json", dir, report.Service)
+    if err := os.WriteFile(jsonPath, jsonData, 0644); err != nil {
+        return fmt.Errorf("write JSON report: %w", err)
+    }
     return GenerateHTML(report, fmt.Sprintf("%s/%s_report.html", dir, report.Service))
 }
 
 func CollectEndpointReport(name, restMethod, restPath, gqlOp, inputDesc string,
-    compareResults []FieldResult, testCases, testsPassed int) EndpointReport {
+    compareResults []CompareResult, testCases, testsPassed int) EndpointReport {
     allMatch := true
     for _, r := range compareResults { if !r.Match { allMatch = false; break } }
     return EndpointReport{

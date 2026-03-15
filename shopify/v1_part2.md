@@ -56,7 +56,7 @@ GraphQL: single POST endpoint (`/admin/api/{version}/graphql.json`), queries + m
 | REST | GraphQL | Notes |
 |------|---------|-------|
 | `GET /orders/{id}/fulfillments.json` | `order(id:$id) { fulfillments {...} }` | |
-| `POST /fulfillments.json` | `fulfillmentCreate(fulfillment:$input)` mutation | Works on FulfillmentOrder, NOT Order line items directly |
+| `POST /fulfillments.json` | `fulfillmentCreateV2(fulfillment:$input)` mutation | `fulfillmentCreate` is deprecated. Works on FulfillmentOrder, NOT Order line items directly |
 | `PUT /fulfillments/{id}/update_tracking.json` | `fulfillmentTrackingInfoUpdate(...)` mutation | |
 
 ### Collections, Metafields, Webhooks
@@ -69,6 +69,34 @@ GraphQL: single POST endpoint (`/admin/api/{version}/graphql.json`), queries + m
 | `POST /{resource}/{id}/metafields.json` | `metafieldsSet(metafields:[$input])` mutation | Unified across all resource types |
 | `GET /webhooks.json` | `webhookSubscriptions(first:N)` query | |
 | `POST /webhooks.json` | `webhookSubscriptionCreate(...)` mutation | |
+
+### Draft Orders
+
+| REST | GraphQL | Notes |
+|------|---------|-------|
+| `GET /draft_orders.json` | `draftOrders(first:N)` query | |
+| `GET /draft_orders/{id}.json` | `draftOrder(id:"gid://shopify/DraftOrder/{id}")` query | |
+| `POST /draft_orders.json` | `draftOrderCreate(input:$input)` mutation | Input: `DraftOrderInput!` |
+| `PUT /draft_orders/{id}.json` | `draftOrderUpdate(id:$id, input:$input)` mutation | |
+| `POST /draft_orders/{id}/complete.json` | `draftOrderComplete(id:$id)` mutation | |
+| `DELETE /draft_orders/{id}.json` | `draftOrderDelete(input:{id:$id})` mutation | |
+
+### Discounts / Price Rules
+
+| REST | GraphQL | Notes |
+|------|---------|-------|
+| `GET /price_rules.json` | `discountNodes(first:N)` query | REST `PriceRule` → GraphQL `DiscountNode`. Completely restructured |
+| `GET /price_rules/{id}.json` | `discountNode(id:"gid://shopify/DiscountCodeNode/{id}")` query | GID type varies: `DiscountCodeNode` or `DiscountAutomaticNode` |
+| `POST /price_rules.json` | `discountCodeBasicCreate(basicCodeDiscount:$input)` mutation | Multiple mutation variants: `basicCreate`, `bxgyCreate`, `freeShippingCreate` |
+| `GET /price_rules/{id}/discount_codes.json` | `codeDiscountNode(id:$id) { codes(first:N) {...} }` query | Codes are nested connection |
+
+### Locations
+
+| REST | GraphQL | Notes |
+|------|---------|-------|
+| `GET /locations.json` | `locations(first:N)` query | |
+| `GET /locations/{id}.json` | `location(id:"gid://shopify/Location/{id}")` query | |
+| `GET /locations/{id}/inventory_levels.json` | `location(id:$id) { inventoryLevels(first:N) {...} }` query | Nested connection |
 
 ---
 
@@ -140,7 +168,7 @@ func toGID(resource string, id int64) string {
 func fromGID(gid string) (int64, error) {
     // GID format: "gid://shopify/Product/123" → splits to ["gid:", "", "shopify", "Product", "123"]
     parts := strings.Split(gid, "/")
-    if len(parts) < 5 || parts[0] != "gid:" {
+    if len(parts) < 5 || parts[0] != "gid:" || parts[2] != "shopify" {
         return 0, fmt.Errorf("invalid GID format: %s", gid)
     }
     return strconv.ParseInt(parts[len(parts)-1], 10, 64)
@@ -228,8 +256,11 @@ type gqlProduct struct {
     } `json:"variants"`
 }
 
-func (g *gqlProduct) toDomain() *Product {
-    id, _ := fromGID(g.ID)
+func (g *gqlProduct) toDomain() (*Product, error) {
+    id, err := fromGID(g.ID)
+    if err != nil {
+        return nil, fmt.Errorf("parse product GID %q: %w", g.ID, err)
+    }
     p := &Product{
         ID:       id,
         Title:    g.Title,
@@ -241,7 +272,7 @@ func (g *gqlProduct) toDomain() *Product {
     for _, v := range g.Variants.Nodes {
         p.Variants = append(p.Variants, v.toDomain())
     }
-    return p
+    return p, nil
 }
 ```
 
@@ -307,7 +338,7 @@ Constraints: max 5 concurrent ops per shop (API 2026-01+), max 5 connections in 
 
 ---
 
-## Query Filter Syntax Reference
+## 7. Query Filter Syntax Reference
 
 GraphQL uses string-based filters in the `query` argument:
 
