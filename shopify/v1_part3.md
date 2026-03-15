@@ -43,7 +43,8 @@ $TEST_DIR/
 ├── shipping/...
 └── scripts/
     ├── run_all.sh
-    └── run_service.sh
+    ├── run_service.sh
+    └── generate_report.sh          # Generate HTML report (Section 9)
 ```
 
 ### 6.0.1 Setup
@@ -182,7 +183,7 @@ func PrintCompareReport(results []CompareResult) {
     for _, r := range results {
         status := "✓ PASS"
         if !r.Match { status = "✗ FAIL" }
-        fmt.Printf("%-25s %-6s %-40v %-40v\n", r.Field, status, r.RESTValue, r.GQLValue)
+        fmt.Printf("%-25s %-6s %-40v %-40v\n", r.Field, status, r.RESTValueue, r.GQLValueue)
     }
 }
 ```
@@ -192,30 +193,64 @@ func PrintCompareReport(results []CompareResult) {
 The most important test: same input, call both REST and GraphQL on real Shopify, compare output.
 
 ```go
+// File: $TEST_DIR/product/product_parity_test.go
+package product_test
+
+import (
+    "context"
+    "testing"
+
+    "YOUR_MODULE_PATH/internal/shopify/product/restimpl"
+    "YOUR_MODULE_PATH/internal/shopify/product/graphqlimpl"
+    "shopify-graphql-tests/helpers"
+
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
+)
+
+// TestLiveParity_GetProduct — Call both REST and GraphQL on real Shopify
+// with the same product ID, compare output field by field
 func TestLiveParity_GetProduct(t *testing.T) {
     cfg := helpers.LoadConfig(t)
     restSvc := restimpl.NewProductService(helpers.NewLiveRESTClient(t, cfg))
     gqlSvc := graphqlimpl.NewProductService(helpers.NewLiveGraphQLClient(t, cfg))
     ctx := context.Background()
 
-    // Get a real product from store
+    // Get a real product from store (list first, take the first ID)
     products, err := restSvc.ListProducts(ctx, product.ListOpts{Limit: 1})
     require.NoError(t, err)
-    require.NotEmpty(t, products, "store needs at least 1 product")
+    require.NotEmpty(t, products, "store needs at least 1 product to test")
 
-    // Call BOTH APIs with the same input
-    restResult, err := restSvc.GetProduct(ctx, products[0].ID)
-    require.NoError(t, err)
-    gqlResult, err := gqlSvc.GetProduct(ctx, products[0].ID)
-    require.NoError(t, err)
+    testID := products[0].ID
 
-    // Compare every field
+    // === CALL BOTH APIs WITH THE SAME INPUT ===
+    restResult, err := restSvc.GetProduct(ctx, testID)
+    require.NoError(t, err, "REST GetProduct failed")
+    gqlResult, err := gqlSvc.GetProduct(ctx, testID)
+    require.NoError(t, err, "GraphQL GetProduct failed")
+
+    // === COMPARE EVERY FIELD ===
+    t.Logf("Comparing product ID=%d: %s", testID, restResult.Title)
     assert.Equal(t, restResult.ID, gqlResult.ID, "ID")
     assert.Equal(t, restResult.Title, gqlResult.Title, "Title")
+    assert.Equal(t, restResult.Handle, gqlResult.Handle, "Handle")
     assert.Equal(t, restResult.BodyHTML, gqlResult.BodyHTML, "BodyHTML")
+    assert.Equal(t, restResult.Vendor, gqlResult.Vendor, "Vendor")
+    assert.Equal(t, restResult.ProductType, gqlResult.ProductType, "ProductType")
     assert.Equal(t, restResult.Tags, gqlResult.Tags, "Tags")
     assert.Equal(t, restResult.Status, gqlResult.Status, "Status")
+
+    // Variants deep compare
     require.Equal(t, len(restResult.Variants), len(gqlResult.Variants), "Variants count")
+    for i := range restResult.Variants {
+        assert.Equal(t, restResult.Variants[i].ID, gqlResult.Variants[i].ID, "Variant[%d].ID", i)
+        assert.Equal(t, restResult.Variants[i].Price, gqlResult.Variants[i].Price, "Variant[%d].Price", i)
+        assert.Equal(t, restResult.Variants[i].SKU, gqlResult.Variants[i].SKU, "Variant[%d].SKU", i)
+    }
+
+    // Print detailed report
+    results := helpers.DeepCompare(t, restResult, gqlResult)
+    helpers.PrintCompareReport(results)
 }
 ```
 
@@ -232,14 +267,97 @@ func TestLive_GetProduct_MultipleCases(t *testing.T) {
 
     products, err := restSvc.ListProducts(ctx, product.ListOpts{Limit: 10})
     require.NoError(t, err)
+    require.True(t, len(products) >= 3, "store needs at least 3 products for multi-case test")
 
     for _, p := range products {
-        t.Run(fmt.Sprintf("Product_%d", p.ID), func(t *testing.T) {
-            restResult, _ := restSvc.GetProduct(ctx, p.ID)
-            gqlResult, _ := gqlSvc.GetProduct(ctx, p.ID)
-            helpers.DeepCompare(t, restResult, gqlResult)
+        t.Run(fmt.Sprintf("Product_%d_%s", p.ID, p.Handle), func(t *testing.T) {
+            restResult, err := restSvc.GetProduct(ctx, p.ID)
+            require.NoError(t, err)
+            gqlResult, err := gqlSvc.GetProduct(ctx, p.ID)
+            require.NoError(t, err)
+
+            results := helpers.DeepCompare(t, restResult, gqlResult)
+            for _, r := range results {
+                if !r.Match {
+                    t.Errorf("MISMATCH field=%s rest=%v gql=%v", r.Field, r.RESTValueue, r.GQLValueue)
+                }
+            }
         })
     }
+}
+
+func TestLive_ListProducts_PaginationParity(t *testing.T) {
+    cfg := helpers.LoadConfig(t)
+    restSvc := restimpl.NewProductService(helpers.NewLiveRESTClient(t, cfg))
+    gqlSvc := graphqlimpl.NewProductService(helpers.NewLiveGraphQLClient(t, cfg))
+    ctx := context.Background()
+
+    // REST: get all products
+    restProducts, err := restSvc.ListProducts(ctx, product.ListOpts{Limit: 50})
+    require.NoError(t, err)
+
+    // GraphQL: get all products (via cursor pagination)
+    gqlProducts, err := gqlSvc.ListProducts(ctx, product.ListOpts{Limit: 50})
+    require.NoError(t, err)
+
+    // Must have the same count
+    assert.Equal(t, len(restProducts), len(gqlProducts),
+        "REST returned %d products, GraphQL returned %d", len(restProducts), len(gqlProducts))
+
+    // Compare each product
+    for i := range restProducts {
+        assert.Equal(t, restProducts[i].ID, gqlProducts[i].ID, "Product[%d] ID", i)
+        assert.Equal(t, restProducts[i].Title, gqlProducts[i].Title, "Product[%d] Title", i)
+    }
+}
+
+func TestLive_CreateUpdateDelete_Product(t *testing.T) {
+    cfg := helpers.LoadConfig(t)
+    gqlSvc := graphqlimpl.NewProductService(helpers.NewLiveGraphQLClient(t, cfg))
+    ctx := context.Background()
+
+    // CREATE
+    created, err := gqlSvc.CreateProduct(ctx, product.CreateProductInput{
+        Title:       "Test Migration Product - " + time.Now().Format(time.RFC3339),
+        Description: "<p>Created by migration test</p>",
+        Vendor:      "TestVendor",
+        ProductType: "TestType",
+        Tags:        []string{"test", "migration"},
+    })
+    require.NoError(t, err)
+    require.NotNil(t, created)
+    t.Logf("Created product ID=%d", created.ID)
+
+    // Cleanup: delete product when test finishes, whether pass or fail
+    t.Cleanup(func() {
+        _ = gqlSvc.DeleteProduct(context.Background(), created.ID)
+        t.Logf("Cleaned up product ID=%d", created.ID)
+    })
+
+    assert.NotZero(t, created.ID)
+    assert.Equal(t, "Test Migration Product", created.Title[:22])
+    assert.Equal(t, "TestVendor", created.Vendor)
+
+    // UPDATE
+    updated, err := gqlSvc.UpdateProduct(ctx, created.ID, product.UpdateProductInput{
+        Title: strPtr("Updated Migration Product"),
+    })
+    require.NoError(t, err)
+    assert.Equal(t, "Updated Migration Product", updated.Title)
+    assert.Equal(t, created.ID, updated.ID) // ID must not change
+
+    // Verify with GET
+    fetched, err := gqlSvc.GetProduct(ctx, created.ID)
+    require.NoError(t, err)
+    assert.Equal(t, "Updated Migration Product", fetched.Title)
+
+    // DELETE
+    err = gqlSvc.DeleteProduct(ctx, created.ID)
+    assert.NoError(t, err)
+
+    // Verify deleted
+    _, err = gqlSvc.GetProduct(ctx, created.ID)
+    assert.Error(t, err) // should return not found
 }
 ```
 
@@ -247,25 +365,25 @@ func TestLive_GetProduct_MultipleCases(t *testing.T) {
 
 Each service must have these tests, **calling the real Shopify API**:
 
-| # | Test Case | Description | Expected |
-|---|-----------|-------------|----------|
-| 1 | **Get single — parity** | Same ID, call REST + GraphQL, compare | All fields match |
-| 2 | **Get multiple — parity** | 5-10 resources, compare each | All fields match |
-| 3 | **List — parity** | Same params, compare count + data | Same count and data |
-| 4 | **List with filters** | Query filters (`status:active`) | Results match filter |
-| 5 | **List pagination** | Paginate through all, compare total | No duplicates, correct total |
-| 6 | **CRUD cycle** | Create → Read → Update → Delete | Full cycle succeeds |
-| 7 | **Create invalid input** | Empty title, invalid field | `userErrors` returned, no panic |
-| 8 | **Get not found — error parity** | Non-existent ID, call BOTH | `errors.Is` returns same error type |
-| 8b | **Error type preservation** | All REST error types tested | `errors.Is`/`errors.As` match |
-| 8c | **Nil return preservation** | REST `(nil, nil)` cases | GraphQL also `(nil, nil)` |
-| 9 | **Partial update** | Update only 1 field | Only that field changed |
-| 10 | **Tags handling** | Complex tags (spaces, special chars) | Comma-string = array content |
-| 11 | **Status mapping** | active, draft, archived | Lowercase in domain struct |
-| 12 | **Variants/Connections** | Product with 5+ variants | All present, correct order |
-| 13 | **Empty collections** | Product with 0 variants | `[]` not nil |
-| 14 | **Large data** | Long description, many tags | No truncation |
-| 15 | **Concurrent reads** | 5 goroutines GetProduct | All succeed, race-free |
+| # | Test Case | Description | Input | Expected |
+|---|-----------|-------------|-------|----------|
+| 1 | **Get single — parity** | Same ID, call REST + GraphQL, compare | Existing resource ID | All fields match |
+| 2 | **Get multiple — parity** | 5-10 resources, compare each | Multiple IDs | All fields match for all |
+| 3 | **List — parity** | Same params, compare count + data | ListOpts{Limit: 50} | Same count and data |
+| 4 | **List with filters** | Query filters | `status:active`, `tag:sale` | Results match filter |
+| 5 | **List pagination** | Paginate through all, compare total | Limit: 10, paginate | No duplicates, correct total |
+| 6 | **CRUD cycle** | Create → Read → Update → Delete | New resource input | Full cycle succeeds |
+| 7 | **Create invalid input** | Empty title, invalid field | Empty title, invalid field | `userErrors` returned, no panic |
+| 8 | **Get not found — error parity** | Non-existent ID, call BOTH | Non-existent ID | `errors.Is(restErr, ErrNotFound)` = `errors.Is(gqlErr, ErrNotFound)` |
+| 8b | **Error type preservation** | All REST error types tested | not found, invalid input, rate limited | `errors.Is`/`errors.As` match |
+| 8c | **Nil return preservation** | REST `(nil, nil)` cases | Cases where REST returns nil+nil | GraphQL also `(nil, nil)` |
+| 9 | **Partial update** | Update only 1 field | Only change title | Only that field changed |
+| 10 | **Tags handling** | Complex tags (spaces, special chars) | Tags with spaces, special chars | Comma-string = array content |
+| 11 | **Status mapping** | active, draft, archived | active, draft, archived | Lowercase in domain struct |
+| 12 | **Variants/Connections** | Product with many variants | Product with 5+ variants | All present, correct order |
+| 13 | **Empty collections** | Product with 0 variants | Product with 0 variants | `[]` not nil |
+| 14 | **Large data** | Long description, many tags | Product with long desc, many tags | No truncation |
+| 15 | **Concurrent reads** | 5 goroutines GetProduct | 5 goroutines | All succeed, race-free |
 
 ### 6.4 Service-Specific Test Cases
 
@@ -305,6 +423,9 @@ go test ./product/... -race -count=1 -v -timeout=2m
 # Run only parity tests
 go test ./... -run "LiveParity" -v -timeout=5m
 
+# Run only multi-case tests
+go test ./... -run "Live_.*MultipleCases" -v
+
 # Run with verbose output for report
 go test ./... -v -json 2>&1 | tee test_results.json
 ```
@@ -326,44 +447,69 @@ For each service being converted, verify all items before marking complete:
 
 ### Scope Discipline (check FIRST)
 - [ ] `git diff --stat` only contains files in the "ONLY modify" list
-- [ ] Domain structs, service interfaces, handlers NOT modified
+- [ ] Domain structs NOT modified
+- [ ] Service interfaces NOT modified
+- [ ] Handlers / Controllers NOT modified
+- [ ] No files outside the service being converted were changed
 - [ ] `_rest.go` still intact, only added deprecated comment
-- [ ] No refactoring of unrelated code
+- [ ] No refactoring / renaming / restructuring of unrelated code
+- [ ] Error types preserved (same type, same message format)
+
+### Deep Review REST (check COMPLETED)
+- [ ] REST Analysis Document written for EVERY function being converted
+- [ ] All callers have been traced and documented
+- [ ] Edge cases identified (nil, not found, rate limit, timeout)
+- [ ] REST response shape verified against reality (not guessed)
+- [ ] "Must-Match Behaviors" checklist created
 
 ### Error Preservation (CRITICAL)
 - [ ] All error types preserved: `ErrNotFound`, `ErrUnauthorized`, `ErrRateLimited`, etc.
 - [ ] Error message format preserved (callers may string-match)
 - [ ] Error wrapping chain preserved (`%w` wrap same way)
 - [ ] Nil return behavior preserved: `(nil, nil)` stays `(nil, nil)`
-- [ ] Each REST HTTP status mapped correctly to GraphQL error
+- [ ] Sentinel errors use same variables, do not create new ones
+- [ ] Each REST HTTP status (404, 401, 429, 422, 500) mapped correctly to GraphQL error
 - [ ] Live test: `errors.Is(restErr, X)` = `errors.Is(gqlErr, X)` for all cases
 - [ ] No "graphql:" or "gql:" prefix added to messages
 
-### Technical Correctness
+### Technical Correctness (see `v1_part2.md`)
 - [ ] All REST endpoints mapped to correct GraphQL operations
 - [ ] Mutation arg names correct (`product:` vs `input:` — see `v1_part2.md` gotcha #13-15)
 - [ ] Input types correct (ProductCreateInput, ProductUpdateInput, CustomerInput, CustomerDeleteInput)
-- [ ] GID conversion in all directions
-- [ ] Field mapping correct (`body_html`→`descriptionHtml`)
-- [ ] Tags comma-string ↔ array handled
-- [ ] Status lowercase ↔ uppercase handled
-- [ ] Pagination cursor-based with `pageInfo`
-- [ ] `userErrors` + `errors` array checked
-- [ ] Null safety for all optional fields
+- [ ] Numeric IDs → GID conversion in all outgoing requests
+- [ ] GID → numeric ID conversion in all incoming responses
+- [ ] Field mapping correct (`body_html`→`descriptionHtml`, `snake_case`→`camelCase`)
+- [ ] Tags: comma-string ↔ array conversion handled
+- [ ] Status: lowercase ↔ uppercase enum conversion handled
+- [ ] Pagination: page-based → cursor-based with `pageInfo`
+- [ ] Error handling: HTTP status → `userErrors` + `errors` array
+- [ ] Null safety: all optional fields handle `null` without panic
+- [ ] Rate limiting: `extensions.cost` logged or monitored
+- [ ] API version consistent with rest of codebase
 
-### Tests — Live API
+### Tests — Live API (at $TEST_DIR)
 - [ ] Tests call real Shopify API, no mocking
-- [ ] Tests in external directory, not in main repo
-- [ ] Parity tests pass: same input → same output
-- [ ] Multi-case: at least 5 resources per service
-- [ ] CRUD cycle: Create → Read → Update → Delete
-- [ ] Error tests: not found, invalid input
-- [ ] Cleanup: no garbage on dev store
+- [ ] Tests written in external directory, NOT in main repo
+- [ ] No new `_test.go` files in main repo
+- [ ] Parity tests pass: same input → REST output = GraphQL output
+- [ ] Multi-case tests: at least 5 different resources per service
+- [ ] CRUD cycle test: Create → Read → Update → Delete successful
+- [ ] Error handling tests: not found, invalid input, rate limit
+- [ ] Cleanup: no garbage left on dev store
+- [ ] Unit tests cover all categories from Section 6.3
+- [ ] Main repo tests still pass: `cd [REPO] && go test ./... -race` — zero regression
+- [ ] `go vet ./...` clean in main repo
 
-### Report & Rollback
-- [ ] HTML report generated and reviewed
-- [ ] REST implementation still compiles
+### Report (Section 9)
+- [ ] HTML report generated for all converted endpoints
+- [ ] Each endpoint has: REST input, REST output, GraphQL input, GraphQL output
+- [ ] All field comparisons pass/fail documented
+- [ ] User has reviewed and approved report
+
+### Rollback Ready
+- [ ] REST implementation still compiles and runs
 - [ ] DI/provider can switch back to REST in < 5 minutes
+- [ ] Rollback path tested (switch back to REST, run tests, pass)
 
 ---
 
@@ -388,20 +534,15 @@ import (
     "time"
 )
 
-type FieldResult struct {
-    Field    string      `json:"field"`
-    RESTVal  interface{} `json:"rest_value"`
-    GQLVal   interface{} `json:"gql_value"`
-    Match    bool        `json:"match"`
-}
+// Uses CompareResult from compare.go (same package) — no duplicate type needed
 
 type EndpointReport struct {
-    Name          string        `json:"name"`
-    RESTMethod    string        `json:"rest_method"`
-    RESTPath      string        `json:"rest_path"`
-    GraphQLOp     string        `json:"graphql_op"`
-    InputDesc     string        `json:"input_desc"`
-    Fields        []FieldResult `json:"fields"`
+    Name          string          `json:"name"`
+    RESTMethod    string          `json:"rest_method"`
+    RESTPath      string          `json:"rest_path"`
+    GraphQLOp     string          `json:"graphql_op"`
+    InputDesc     string          `json:"input_desc"`
+    Fields        []CompareResult `json:"fields"`
     AllMatch      bool          `json:"all_match"`
     TestCases     int           `json:"test_cases"`
     TestsPassed   int           `json:"tests_passed"`
@@ -559,8 +700,8 @@ const htmlTemplate = `<!DOCTYPE html>
           <tr>
             <td><span class="match-icon {{statusClass .Match}}">{{if .Match}}✓{{else}}✗{{end}}</span></td>
             <td style="font-weight:600">{{.Field}}</td>
-            <td title="{{fmtVal .RESTVal}}">{{truncate .RESTVal 60}}</td>
-            <td title="{{fmtVal .GQLVal}}">{{truncate .GQLVal 60}}</td>
+            <td title="{{fmtVal .RESTValue}}">{{truncate .RESTValue 60}}</td>
+            <td title="{{fmtVal .GQLValue}}">{{truncate .GQLValue 60}}</td>
           </tr>{{end}}
         </tbody>
       </table>
