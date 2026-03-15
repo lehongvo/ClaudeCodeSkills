@@ -16,12 +16,14 @@ type: reference
 - Mixed-language content (Vietnamese + English) reduces accessibility and creates inconsistent tone
 - Overly long skill files (1000+ lines) risk exceeding context limits and diluting priority instructions — inline code (HTML templates, full implementations) is the usual culprit
 - Hardcoded paths (~/Desktop/shopify/...) make skills non-portable across users/machines
-- Section cross-references by number (e.g., "Section 1.2") that don't match actual section numbering — this recurs across revisions
+- Section cross-references by number (e.g., "Section 1.2") that don't match actual section numbering — this recurs across revisions and persists through multiple review cycles
 - Missing frontmatter fields or incomplete description keywords for skill matching
 - Report templates with example data can confuse agents into using the example data literally
 - Go raw string literals containing backticks cause compile errors — watch for ` + "`" patterns in inline Go code
 - Duplicate checklist items across subsections (e.g., two "Testing" checklists with overlapping items)
 - Step number references in later sections that are off-by-one from the actual workflow numbering
+- Type name mismatches across sections (e.g., FieldResult vs CompareResult with different field names for same concept) — inline code blocks written at different times may diverge
+- Issues tend to persist across revisions unless explicitly tracked — consider providing a concrete checklist of fixes for the author
 
 ## Structural Anti-patterns
 - Embedding 100+ lines of HTML/CSS/JS templates inline when a reference to an external file would suffice

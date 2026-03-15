@@ -183,7 +183,7 @@ func PrintCompareReport(results []CompareResult) {
     for _, r := range results {
         status := "✓ PASS"
         if !r.Match { status = "✗ FAIL" }
-        fmt.Printf("%-25s %-6s %-40v %-40v\n", r.Field, status, r.RESTValueue, r.GQLValueue)
+        fmt.Printf("%-25s %-6s %-40v %-40v\n", r.Field, status, r.RESTValue, r.GQLValue)
     }
 }
 ```
@@ -279,7 +279,7 @@ func TestLive_GetProduct_MultipleCases(t *testing.T) {
             results := helpers.DeepCompare(t, restResult, gqlResult)
             for _, r := range results {
                 if !r.Match {
-                    t.Errorf("MISMATCH field=%s rest=%v gql=%v", r.Field, r.RESTValueue, r.GQLValueue)
+                    t.Errorf("MISMATCH field=%s rest=%v gql=%v", r.Field, r.RESTValue, r.GQLValue)
                 }
             }
         })
